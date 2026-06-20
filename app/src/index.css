@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: #050508;
+  color: #e2e8f0;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+@keyframes flash-green {
+  0%   { background-color: #16a34a; }
+  100% { background-color: transparent; }
+}
+@keyframes flash-red {
+  0%   { background-color: #dc2626; }
+  100% { background-color: transparent; }
+}
+.flash-green { animation: flash-green 0.8s ease-out forwards; }
+.flash-red   { animation: flash-red   0.8s ease-out forwards; }

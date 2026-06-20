@@ -1,0 +1,13 @@
+[package]
+name = "jetpack"
+edition = "2024.beta"
+
+[dependencies]
+
+[addresses]
+jetpack = "0x0"
+
+[dev-dependencies]
+
+[dev-addresses]
+
