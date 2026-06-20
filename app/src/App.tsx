@@ -364,10 +364,15 @@ export default function App() {
       {/* Header */}
       <div className="flex items-end justify-between border-b border-zinc-800 pb-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-white">JETPACK</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            Scoped spending caps for AI agents on Sui
-          </p>
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="Jetpack" className="w-9 h-9 rounded-lg" />
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-white">JETPACK</h1>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                Scoped spending caps for AI agents on Sui
+              </p>
+            </div>
+          </div>
         </div>
         <button
           disabled
