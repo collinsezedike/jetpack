@@ -1,0 +1,6 @@
+packages:
+  - 'sdk'
+  - 'demo/app'
+  - 'demo/cli'
+allowBuilds:
+  esbuild: true

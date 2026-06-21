@@ -1,10 +1,11 @@
-import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
-import { NETWORK, PACKAGE_ID, CLOCK } from "./config";
+import { JetpackClient } from "jetpack-sui";
+import { NETWORK } from "./config";
 
-export const client = new SuiClient({ url: getFullnodeUrl(NETWORK) });
+export const jetpack = new JetpackClient({ network: NETWORK });
+export const { suiClient } = jetpack;
 
 export function addr(kp: Ed25519Keypair): string {
   return kp.getPublicKey().toSuiAddress();
@@ -13,7 +14,6 @@ export function addr(kp: Ed25519Keypair): string {
 export function loadOwnerFromKey(b64Key: string): Ed25519Keypair {
   const binary = atob(b64Key.trim());
   const raw = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  // Strip scheme byte if present (keystore format: 1 byte scheme + 32 bytes seed)
   const seed = raw.length === 33 ? raw.slice(1) : raw;
   return Ed25519Keypair.fromSecretKey(seed);
 }
@@ -26,6 +26,9 @@ function assertOk(
   if (s?.status !== "success") throw new Error(`${label}: ${s?.error ?? "failed"}`);
 }
 
+// ── Demo utilities (batch ops, not protocol primitives) ───────────────────────
+
+/** Fund N agents in a single PTB to minimise owner transaction count. */
 export async function fundAllAgents(
   from: Ed25519Keypair,
   agents: string[],
@@ -36,12 +39,13 @@ export async function fundAllAgents(
   const amounts = agents.flatMap(() => [gasMist, paymentMist]);
   const coins = tx.splitCoins(tx.gas, amounts);
   agents.forEach((to, i) => tx.transferObjects([coins[i * 2], coins[i * 2 + 1]], to));
-  const r = await client.signAndExecuteTransaction({
+  const r = await suiClient.signAndExecuteTransaction({
     signer: from, transaction: tx, options: { showEffects: true },
   });
   assertOk(r, "fund_all");
 }
 
+/** Issue N caps in a single PTB — one transaction regardless of swarm size. */
 export async function issueAllCaps(
   owner: Ed25519Keypair,
   agents: string[],
@@ -50,7 +54,7 @@ export async function issueAllCaps(
   const tx = new Transaction();
   agents.forEach((agentAddr) => {
     tx.moveCall({
-      target: `${PACKAGE_ID}::jetpack::issue_cap`,
+      target: `${jetpack.packageId}::jetpack::issue_cap`,
       arguments: [
         tx.pure.address(agentAddr),
         tx.pure.u64(spendLimit),
@@ -59,7 +63,7 @@ export async function issueAllCaps(
       ],
     });
   });
-  const r = await client.signAndExecuteTransaction({
+  const r = await suiClient.signAndExecuteTransaction({
     signer: owner, transaction: tx, options: { showEvents: true, showEffects: true },
   });
   assertOk(r, "issue_all_caps");
@@ -78,80 +82,45 @@ export async function issueAllCaps(
   });
 }
 
-export async function pay(
-  agent: Ed25519Keypair,
-  capId: string,
-  payeeAddress: string,
-  amountMist: bigint,
-): Promise<string> {
-  const coins = await client.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
-  const sorted = coins.data.sort((a, b) =>
-    BigInt(a.balance) < BigInt(b.balance) ? -1 : 1,
-  );
-  const paymentCoin = sorted.find((c) => BigInt(c.balance) >= amountMist);
-  const gasCoin     = [...sorted].reverse().find((c) => c.coinObjectId !== paymentCoin?.coinObjectId);
-  if (!paymentCoin || !gasCoin) throw new Error("Insufficient coins");
-
-  const tx = new Transaction();
-  tx.setGasBudget(5_000_000n);
-  tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
-  tx.moveCall({
-    target: `${PACKAGE_ID}::jetpack::pay`,
-    arguments: [
-      tx.object(capId),
-      tx.object(paymentCoin.coinObjectId),
-      tx.pure.address(payeeAddress),
-      tx.pure.u64(amountMist),
-      tx.object(CLOCK),
-    ],
-  });
-  const r = await client.signAndExecuteTransaction({
-    signer: agent, transaction: tx, options: { showEffects: true },
-  });
-  assertOk(r, "pay");
-  return r.digest;
-}
-
-// Sweeps all SUI coins owned by an agent back to the owner address.
-// Uses tx.gas transfer trick to drain even the gas coin remainder.
+/** Sweep all SUI coins from an agent back to the owner wallet. */
 export async function withdrawAgent(
   agent: Ed25519Keypair,
   ownerAddress: string,
 ): Promise<string | null> {
-  const coins = await client.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
+  const coins = await suiClient.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
   if (coins.data.length === 0) return null;
 
-  const sorted = [...coins.data].sort((a, b) =>
-    BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
-  );
-  const gasCoin   = sorted[0];
-  const restCoins = sorted.slice(1);
+  const sorted  = [...coins.data].sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1));
+  const gasCoin = sorted[0];
+  const rest    = sorted.slice(1);
 
   const tx = new Transaction();
   tx.setGasBudget(3_000_000n);
   tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
-
-  if (restCoins.length > 0) {
-    tx.transferObjects(restCoins.map((c) => tx.object(c.coinObjectId)), ownerAddress);
+  if (rest.length > 0) {
+    tx.transferObjects(rest.map(c => tx.object(c.coinObjectId)), ownerAddress);
   }
-  // Transfer the gas change (whatever remains after fees) back to owner too
   tx.transferObjects([tx.gas], ownerAddress);
 
-  const r = await client.signAndExecuteTransaction({
+  const r = await suiClient.signAndExecuteTransaction({
     signer: agent, transaction: tx, options: { showEffects: true },
   });
   assertOk(r, "withdraw");
   return r.digest;
 }
 
+// ── Protocol operations (delegated to SDK) ────────────────────────────────────
+
+export async function pay(
+  agent: Ed25519Keypair,
+  capId: string,
+  payeeAddress: string,
+  amountMist: bigint,
+): Promise<string> {
+  const { digest } = await jetpack.pay(agent, { capId, payee: payeeAddress, amount: amountMist });
+  return digest;
+}
+
 export async function revoke(owner: Ed25519Keypair, capId: string): Promise<void> {
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${PACKAGE_ID}::jetpack::revoke`,
-    arguments: [tx.object(capId)],
-  });
-  const r = await client.signAndExecuteTransaction({
-    signer: owner, transaction: tx, options: { showEffects: true },
-  });
-  assertOk(r, "revoke");
+  await jetpack.revoke(owner, capId);
 }

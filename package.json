@@ -1,0 +1,7 @@
+{
+  "name": "jetpack",
+  "private": true,
+  "scripts": {
+    "build:sdk": "pnpm --filter jetpack-sui build"
+  }
+}
