@@ -1,3 +1,4 @@
+import { motion } from "framer-motion";
 import { AgentState } from "../types";
 import AgentCard from "./AgentCard";
 
@@ -16,7 +17,13 @@ export default function AgentGrid({ agents }: Props) {
   return (
     <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
       {sorted.map((a, rank) => (
-        <AgentCard key={a.index} agent={a} rank={rank + 1} />
+        <motion.div
+          key={a.index}
+          layout
+          transition={{ type: "spring", stiffness: 350, damping: 30 }}
+        >
+          <AgentCard agent={a} rank={rank + 1} />
+        </motion.div>
       ))}
     </div>
   );

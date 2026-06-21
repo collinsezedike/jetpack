@@ -1,3 +1,4 @@
+import { motion } from "framer-motion";
 import { AgentState, Strategy } from "../types";
 import { EXPLORER } from "../config";
 import { formatMist, shortAddr } from "../utils";
@@ -40,6 +41,13 @@ export default function AgentsTable({ agents, onRevoke }: Props) {
     );
   }
 
+  const sorted = [...agents].sort((a, b) => {
+    const diff = b.received - a.received;
+    if (diff > 0n) return 1;
+    if (diff < 0n) return -1;
+    return 0;
+  });
+
   return (
     <div className="space-y-6">
       {/* Strategy legend */}
@@ -59,7 +67,8 @@ export default function AgentsTable({ agents, onRevoke }: Props) {
         <table className="w-full text-[11px] font-mono">
           <thead>
             <tr className="border-b border-zinc-800 text-zinc-500 tracking-widest text-[9px]">
-              <th className="text-left px-3 py-2">#</th>
+              <th className="text-left px-3 py-2">RANK</th>
+              <th className="text-left px-3 py-2">AGENT</th>
               <th className="text-left px-3 py-2">STRAT</th>
               <th className="text-left px-3 py-2">ADDRESS</th>
               <th className="text-left px-3 py-2">CAP</th>
@@ -72,12 +81,16 @@ export default function AgentsTable({ agents, onRevoke }: Props) {
             </tr>
           </thead>
           <tbody>
-            {agents.map((a) => (
-              <tr
+            {sorted.map((a, rank) => (
+              <motion.tr
                 key={a.index}
+                layout
+                transition={{ type: "spring", stiffness: 350, damping: 30 }}
                 className="border-b border-zinc-900 hover:bg-zinc-900/50 transition-colors"
               >
-                <td className="px-3 py-2 text-zinc-600">{a.index + 1}</td>
+                <td className="px-3 py-2 text-zinc-400 font-bold">{rank + 1}</td>
+
+                <td className="px-3 py-2 text-zinc-600">A{a.index + 1}</td>
 
                 <td className="px-3 py-2">
                   <span className={`px-1.5 py-0.5 rounded border text-[9px] font-bold ${STRATEGY_STYLE[a.strategy]}`}>
@@ -137,7 +150,7 @@ export default function AgentsTable({ agents, onRevoke }: Props) {
                     </button>
                   )}
                 </td>
-              </tr>
+              </motion.tr>
             ))}
           </tbody>
         </table>
