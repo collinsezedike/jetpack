@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef } from "react";
-import { useCurrentAccount, useSignAndExecuteTransaction, ConnectButton } from "@mysten/dapp-kit";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { useCurrentAccount, useSignAndExecuteTransaction, useDisconnectWallet, ConnectButton } from "@mysten/dapp-kit";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { AgentState, LogEntry, Strategy, TxRecord } from "./types";
 import { SWARM_SIZE, AGENT_GAS_MIST, PAYMENT_MIST, SPEND_LIMIT } from "./config";
@@ -7,6 +7,7 @@ import {
   buildFundAllTx, buildIssueAllCapsTx, buildRevokeTx, parseCapIdsFromDigest,
   pay, withdrawAgent, addr,
 } from "./actions";
+import { shortAddr } from "./utils";
 import AgentGrid    from "./components/AgentGrid";
 import AgentsTable  from "./components/AgentsTable";
 import EventFeed    from "./components/EventFeed";
@@ -51,6 +52,63 @@ function pickTarget(
   }
   // chaotic: 25% chance to skip
   return Math.random() < 0.25 ? null : random();
+}
+
+function WalletButton() {
+  const account                     = useCurrentAccount();
+  const { mutate: disconnect }      = useDisconnectWallet();
+  const [open, setOpen]             = useState(false);
+  const [copied, setCopied]         = useState(false);
+  const ref                         = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  if (!account) return <ConnectButton />;
+
+  const copyAddress = () => {
+    navigator.clipboard.writeText(account.address);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center justify-between w-48 text-xs font-mono px-4 py-2.5 rounded border
+                   border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-500
+                   bg-zinc-900 transition-colors"
+      >
+        <span className="flex-1 text-left">{shortAddr(account.address, 10, 8)}</span>
+        <span className="text-zinc-600 text-[10px] ml-1.5">▾</span>
+      </button>
+
+      {open && (
+        <div className="absolute right-0 mt-1 w-48 rounded border border-zinc-700 bg-zinc-900 shadow-xl z-50 overflow-hidden">
+          <button
+            onClick={copyAddress}
+            className="w-full text-left px-4 py-2.5 text-xs text-zinc-300 hover:bg-zinc-800 transition-colors"
+          >
+            {copied ? "Copied!" : "Copy address"}
+          </button>
+          <div className="border-t border-zinc-800" />
+          <button
+            onClick={() => { disconnect(); setOpen(false); }}
+            className="w-full text-left px-4 py-2.5 text-xs text-red-400 hover:bg-zinc-800 transition-colors"
+          >
+            Disconnect
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 let logCounter = 0;
@@ -362,7 +420,7 @@ export default function App() {
             </div>
           </div>
         </div>
-        <ConnectButton />
+        <WalletButton />
       </div>
 
       {/* No wallet connected */}
