@@ -124,3 +124,56 @@ export async function pay(
 export async function revoke(owner: Ed25519Keypair, capId: string): Promise<void> {
   await jetpack.revoke(owner, capId);
 }
+
+// ── Pure transaction builders (for wallet adapter signing) ────────────────────
+
+export function buildFundAllTx(agents: string[], gasMist: bigint, paymentMist: bigint): Transaction {
+  const tx = new Transaction();
+  const amounts = agents.flatMap(() => [gasMist, paymentMist]);
+  const coins = tx.splitCoins(tx.gas, amounts);
+  agents.forEach((to, i) => tx.transferObjects([coins[i * 2], coins[i * 2 + 1]], to));
+  return tx;
+}
+
+export function buildIssueAllCapsTx(agents: string[], spendLimit: bigint): Transaction {
+  const tx = new Transaction();
+  agents.forEach((agentAddr) => {
+    tx.moveCall({
+      target: `${jetpack.packageId}::jetpack::issue_cap`,
+      arguments: [
+        tx.pure.address(agentAddr),
+        tx.pure.u64(spendLimit),
+        tx.pure.u64(0n),
+        tx.pure(bcs.vector(bcs.Address).serialize([])),
+      ],
+    });
+  });
+  return tx;
+}
+
+export function buildRevokeTx(capId: string): Transaction {
+  const tx = new Transaction();
+  tx.moveCall({
+    target: `${jetpack.packageId}::jetpack::revoke`,
+    arguments: [tx.object(capId)],
+  });
+  return tx;
+}
+
+export async function parseCapIdsFromDigest(digest: string, agents: string[]): Promise<string[]> {
+  await suiClient.waitForTransaction({ digest });
+  const result = await suiClient.getTransactionBlock({ digest, options: { showEvents: true } });
+
+  const agentToCap = new Map<string, string>();
+  for (const ev of result.events ?? []) {
+    const f = ev.parsedJson as { cap_id?: string; agent?: string } | undefined;
+    if (f?.cap_id && f?.agent) {
+      agentToCap.set(f.agent, `0x${f.cap_id.replace(/^0x/i, "")}`);
+    }
+  }
+  return agents.map((a, i) => {
+    const id = agentToCap.get(a);
+    if (!id) throw new Error(`No cap event for agent ${i + 1}`);
+    return id;
+  });
+}

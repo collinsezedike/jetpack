@@ -18,7 +18,7 @@
     "@mysten/sui": ">=1.0.0"
   },
   "devDependencies": {
-    "@mysten/sui": "^1.45.2",
+    "@mysten/sui": "^2.19.0",
     "typescript": "^5.0.0"
   }
 }

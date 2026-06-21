@@ -1,9 +1,11 @@
 import { useState, useCallback, useRef } from "react";
+import { useCurrentAccount, useSignAndExecuteTransaction, ConnectButton } from "@mysten/dapp-kit";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { AgentState, LogEntry, Strategy, TxRecord } from "./types";
 import { SWARM_SIZE, AGENT_GAS_MIST, PAYMENT_MIST, SPEND_LIMIT } from "./config";
 import {
-  loadOwnerFromKey, fundAllAgents, issueAllCaps, pay, revoke, withdrawAgent, addr,
+  buildFundAllTx, buildIssueAllCapsTx, buildRevokeTx, parseCapIdsFromDigest,
+  pay, withdrawAgent, addr,
 } from "./actions";
 import AgentGrid    from "./components/AgentGrid";
 import AgentsTable  from "./components/AgentsTable";
@@ -54,14 +56,14 @@ function pickTarget(
 let logCounter = 0;
 
 export default function App() {
-  const [phase,    setPhase]    = useState<Phase>("idle");
-  const [agents,   setAgents]   = useState<AgentState[]>([]);
-  const [logs,     setLogs]     = useState<LogEntry[]>([]);
-  const [keyInput, setKeyInput] = useState(import.meta.env.VITE_OWNER_PRIVATE_KEY ?? "");
-  const [showKey,  setShowKey]  = useState(false);
-  const [tab, setTab] = useState<Tab>("swarm");
+  const account                               = useCurrentAccount();
+  const { mutateAsync: signAndExecute }       = useSignAndExecuteTransaction();
 
-  const ownerRef       = useRef<Ed25519Keypair | null>(null);
+  const [phase,  setPhase]  = useState<Phase>("idle");
+  const [agents, setAgents] = useState<AgentState[]>([]);
+  const [logs,   setLogs]   = useState<LogEntry[]>([]);
+  const [tab,    setTab]    = useState<Tab>("swarm");
+
   const agentKpsRef    = useRef<Ed25519Keypair[]>([]);
   const gameRunningRef = useRef(false);
   const runStartRef    = useRef<number | null>(null);
@@ -96,24 +98,16 @@ export default function App() {
   };
 
   // ------------------------------------------------------------------
-  // SETUP: fund + issue caps
+  // SETUP: fund + issue caps (wallet signs both transactions)
   // ------------------------------------------------------------------
   const handleSetup = useCallback(async () => {
-    let owner: Ed25519Keypair;
-    try {
-      owner = loadOwnerFromKey(keyInput.trim());
-    } catch {
-      log("Invalid private key. Paste the base64 value from sui.keystore.", "error");
-      return;
-    }
-    ownerRef.current = owner;
+    if (!account) return;
 
     const kps = Array.from({ length: SWARM_SIZE }, () => Ed25519Keypair.generate());
     agentKpsRef.current = kps;
     const fresh = makeAgents(kps);
     setAgents(fresh);
     setLogs([]);
-    // Seed game state
     gs.current = {
       capIds:     Array(SWARM_SIZE).fill(null),
       strategies: fresh.map((a) => a.strategy),
@@ -122,11 +116,11 @@ export default function App() {
       revoked:    Array(SWARM_SIZE).fill(false),
     };
 
-    // Fund
+    // Fund all agents in one transaction — wallet signs
     setPhase("funding");
     log(`Funding ${SWARM_SIZE} agents...`);
     try {
-      await fundAllAgents(owner, kps.map(addr), AGENT_GAS_MIST, PAYMENT_MIST);
+      await signAndExecute({ transaction: buildFundAllTx(kps.map(addr), AGENT_GAS_MIST, PAYMENT_MIST) });
       kps.forEach((_, i) => patchAgent(i, { status: "funded" }));
       log("All agents funded.", "success");
     } catch (e) {
@@ -135,11 +129,12 @@ export default function App() {
       return;
     }
 
-    // Issue caps
+    // Issue all caps in one transaction — wallet signs, then parse events for cap IDs
     setPhase("issuing");
     log("Issuing spending caps...");
     try {
-      const capIds = await issueAllCaps(owner, kps.map(addr), SPEND_LIMIT);
+      const { digest } = await signAndExecute({ transaction: buildIssueAllCapsTx(kps.map(addr), SPEND_LIMIT) });
+      const capIds = await parseCapIdsFromDigest(digest, kps.map(addr));
       capIds.forEach((capId, i) => {
         gs.current.capIds[i] = capId;
         patchAgent(i, { capId, status: "capped" });
@@ -150,7 +145,7 @@ export default function App() {
       log(`Cap issuance failed: ${e}`, "error");
       setPhase("idle");
     }
-  }, [keyInput, log, patchAgent]);
+  }, [account, signAndExecute, log, patchAgent]);
 
   // ------------------------------------------------------------------
   // SWARM LOOP
@@ -260,11 +255,10 @@ export default function App() {
   // WITHDRAW: drain all agent wallets back to owner
   // ------------------------------------------------------------------
   const handleWithdraw = useCallback(async () => {
-    const owner = ownerRef.current;
-    const kps   = agentKpsRef.current;
-    if (!owner || kps.length === 0) return;
+    const ownerAddress = account?.address;
+    const kps = agentKpsRef.current;
+    if (!ownerAddress || kps.length === 0) return;
 
-    const ownerAddress = addr(owner);
     log("Withdrawing all agent funds to owner wallet...", "info");
 
     const results = await Promise.allSettled(
@@ -284,14 +278,13 @@ export default function App() {
 
     const ok = results.filter((r) => r.status === "fulfilled").length;
     log(`Withdraw complete: ${ok}/${kps.length} agents drained.`, "info");
-  }, [log]);
+  }, [account, log]);
 
   // ------------------------------------------------------------------
-  // REVOKE ALL: withdraw funds first, then revoke caps
+  // REVOKE ALL: withdraw funds first, then revoke caps (wallet signs each revoke)
   // ------------------------------------------------------------------
   const handleRevokeAll = useCallback(async () => {
-    const owner = ownerRef.current;
-    if (!owner) return;
+    if (!account) return;
 
     await handleWithdraw();
 
@@ -302,7 +295,7 @@ export default function App() {
         .filter((a) => a.capId && a.status !== "revoked" && a.status !== "exhausted" && a.status !== "dead")
         .map(async (a) => {
           try {
-            await revoke(owner, a.capId!);
+            await signAndExecute({ transaction: buildRevokeTx(a.capId!) });
             gs.current.revoked[a.index] = true;
             patchAgent(a.index, { status: "revoked" });
             log(`Agent ${a.index + 1} revoked.`, "warn");
@@ -311,15 +304,14 @@ export default function App() {
           }
         }),
     );
-  }, [agents, handleWithdraw, log, patchAgent]);
+  }, [account, agents, handleWithdraw, signAndExecute, log, patchAgent]);
 
   const handleRevokeSingle = useCallback(async (index: number) => {
-    const owner = ownerRef.current;
+    const ownerAddress = account?.address;
     const kp    = agentKpsRef.current[index];
     const capId = agents[index]?.capId;
-    if (!owner || !kp || !capId) return;
+    if (!ownerAddress || !kp || !capId) return;
 
-    const ownerAddress = addr(owner);
     log(`Withdrawing agent ${index + 1} funds...`, "info");
     try {
       await withdrawAgent(kp, ownerAddress);
@@ -329,26 +321,24 @@ export default function App() {
     }
 
     try {
-      await revoke(owner, capId);
+      await signAndExecute({ transaction: buildRevokeTx(capId) });
       gs.current.revoked[index] = true;
       patchAgent(index, { status: "revoked" });
       log(`Agent ${index + 1} cap revoked.`, "warn");
     } catch (e) {
       log(`Agent ${index + 1} revoke failed: ${e}`, "error");
     }
-  }, [agents, handleWithdraw, log, patchAgent]);
+  }, [account, agents, signAndExecute, log, patchAgent]);
 
   const handleReset = useCallback(async () => {
     gameRunningRef.current = false;
 
-    // If caps were issued, withdraw funds and revoke before clearing UI
     const hasCaps = gs.current.capIds.some((id) => id !== null);
     if (hasCaps) await handleRevokeAll();
 
     setPhase("idle");
     setAgents([]);
     setLogs([]);
-    ownerRef.current    = null;
     agentKpsRef.current = [];
     gs.current = { capIds: [], strategies: [], lastPaidBy: [], exhausted: [], revoked: [] };
   }, [handleRevokeAll]);
@@ -356,8 +346,6 @@ export default function App() {
   // ------------------------------------------------------------------
   // render
   // ------------------------------------------------------------------
-  const hasKey = keyInput.trim().length > 10;
-
   return (
     <div className="min-h-screen bg-[#050508] text-slate-200 font-mono p-4 md:p-8 space-y-6">
 
@@ -374,55 +362,31 @@ export default function App() {
             </div>
           </div>
         </div>
-        <button
-          disabled
-          className="text-xs font-bold tracking-widest px-3 py-1.5 rounded border
-                     border-zinc-700 text-zinc-600 bg-zinc-900 cursor-not-allowed"
-          title="Mainnet coming soon"
-        >
-          Switch to Mainnet
-        </button>
+        <ConnectButton />
       </div>
 
-      {/* Key input */}
-      <div className="rounded border border-zinc-800 bg-zinc-950 p-4 space-y-2">
-        <label className="text-[10px] font-bold tracking-widest text-zinc-500">
-          OWNER PRIVATE KEY (base64 from sui.keystore)
-        </label>
-        <div className="flex gap-2">
-          <input
-            type={showKey ? "text" : "password"}
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-            placeholder="paste base64 key..."
-            className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-3 py-2 text-xs
-                       text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-violet-500"
-          />
-          <button
-            onClick={() => setShowKey((v) => !v)}
-            className="px-3 py-2 text-xs rounded border border-zinc-700 text-zinc-400
-                       hover:border-zinc-500 transition-colors"
-          >
-            {showKey ? "HIDE" : "SHOW"}
-          </button>
-        </div>
-        {!hasKey && (
-          <p className="text-[10px] text-zinc-600">
-            Run: <span className="text-zinc-400">cat ~/.sui/sui_config/sui.keystore</span> and paste the quoted base64 string.
+      {/* No wallet connected */}
+      {!account && (
+        <div className="rounded border border-zinc-800 bg-zinc-950 p-6 text-center space-y-2">
+          <p className="text-sm text-zinc-400">Connect your Sui wallet to run the demo.</p>
+          <p className="text-xs text-zinc-600">
+            Your private key never leaves your wallet. All owner transactions are signed in-extension.
           </p>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Control panel */}
-      <ControlPanel
-        phase={phase}
-        stats={stats}
-        hasKey={hasKey}
-        onSetup={handleSetup}
-        onFire={handleFire}
-        onStop={handleStop}
-        onReset={handleReset}
-      />
+      {account && (
+        <ControlPanel
+          phase={phase}
+          stats={stats}
+          hasKey={!!account}
+          onSetup={handleSetup}
+          onFire={handleFire}
+          onStop={handleStop}
+          onReset={handleReset}
+        />
+      )}
 
       {/* Tab bar */}
       <div className="flex gap-1 border-b border-zinc-800">

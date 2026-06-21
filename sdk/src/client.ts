@@ -1,4 +1,4 @@
-import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
+import { SuiJsonRpcClient, getJsonRpcFullnodeUrl } from "@mysten/sui/jsonRpc";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
 import type { Signer } from "@mysten/sui/cryptography";
@@ -17,13 +17,13 @@ const CLOCK_ID           = "0x6";
 
 export class JetpackClient {
   /** The underlying Sui RPC client. Exposed for advanced usage. */
-  readonly suiClient: SuiClient;
+  readonly suiClient: SuiJsonRpcClient;
   readonly packageId: string;
 
   constructor(options: JetpackClientOptions = {}) {
     const network  = options.network ?? "testnet";
-    const rpcUrl   = options.rpcUrl  ?? getFullnodeUrl(network);
-    this.suiClient = new SuiClient({ url: rpcUrl });
+    const rpcUrl   = options.rpcUrl  ?? getJsonRpcFullnodeUrl(network);
+    this.suiClient = new SuiJsonRpcClient({ url: rpcUrl, network });
     this.packageId = options.packageId ?? TESTNET_PACKAGE_ID;
   }
 
