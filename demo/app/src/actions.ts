@@ -2,9 +2,9 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
 import { JetpackClient } from "jetpack-sui";
-import { NETWORK } from "./config";
+import { NETWORK, RPC_URL } from "./config";
 
-export const jetpack = new JetpackClient({ network: NETWORK });
+export const jetpack = new JetpackClient({ network: NETWORK, rpcUrl: RPC_URL });
 export const { suiClient } = jetpack;
 
 export function addr(kp: Ed25519Keypair): string {
@@ -152,10 +152,16 @@ export function buildIssueAllCapsTx(agents: string[], spendLimit: bigint): Trans
 }
 
 export function buildRevokeTx(capId: string): Transaction {
+  return buildRevokeAllTx([capId]);
+}
+
+export function buildRevokeAllTx(capIds: string[]): Transaction {
   const tx = new Transaction();
-  tx.moveCall({
-    target: `${jetpack.packageId}::jetpack::revoke`,
-    arguments: [tx.object(capId)],
+  capIds.forEach((capId) => {
+    tx.moveCall({
+      target: `${jetpack.packageId}::jetpack::revoke`,
+      arguments: [tx.object(capId)],
+    });
   });
   return tx;
 }

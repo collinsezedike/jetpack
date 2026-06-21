@@ -1,4 +1,5 @@
 export const NETWORK    = "testnet" as const;
+export const RPC_URL    = "https://fullnode.testnet.sui.io";
 export const EXPLORER   = "https://suiscan.xyz/testnet";
 export const SWARM_SIZE = 20;
 

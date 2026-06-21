@@ -4,7 +4,7 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { AgentState, LogEntry, Strategy, TxRecord } from "./types";
 import { SWARM_SIZE, AGENT_GAS_MIST, PAYMENT_MIST, SPEND_LIMIT } from "./config";
 import {
-  buildFundAllTx, buildIssueAllCapsTx, buildRevokeTx, parseCapIdsFromDigest,
+  buildFundAllTx, buildIssueAllCapsTx, buildRevokeTx, buildRevokeAllTx, parseCapIdsFromDigest,
   pay, withdrawAgent, addr,
 } from "./actions";
 import { shortAddr } from "./utils";
@@ -346,22 +346,22 @@ export default function App() {
 
     await handleWithdraw();
 
-    const snap = agents;
-    log("Revoking all active caps...", "warn");
-    await Promise.allSettled(
-      snap
-        .filter((a) => a.capId && a.status !== "revoked" && a.status !== "exhausted" && a.status !== "dead")
-        .map(async (a) => {
-          try {
-            await signAndExecute({ transaction: buildRevokeTx(a.capId!) });
-            gs.current.revoked[a.index] = true;
-            patchAgent(a.index, { status: "revoked" });
-            log(`Agent ${a.index + 1} revoked.`, "warn");
-          } catch (e) {
-            log(`Revoke ${a.index + 1} failed: ${e}`, "error");
-          }
-        }),
+    const toRevoke = agents.filter(
+      (a) => a.capId && a.status !== "revoked" && a.status !== "exhausted" && a.status !== "dead",
     );
+    if (toRevoke.length === 0) return;
+
+    log(`Revoking ${toRevoke.length} caps in one transaction...`, "warn");
+    try {
+      await signAndExecute({ transaction: buildRevokeAllTx(toRevoke.map((a) => a.capId!)) });
+      toRevoke.forEach((a) => {
+        gs.current.revoked[a.index] = true;
+        patchAgent(a.index, { status: "revoked" });
+      });
+      log(`${toRevoke.length} caps revoked.`, "warn");
+    } catch (e) {
+      log(`Revoke all failed: ${e}`, "error");
+    }
   }, [account, agents, handleWithdraw, signAndExecute, log, patchAgent]);
 
   const handleRevokeSingle = useCallback(async (index: number) => {
