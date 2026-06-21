@@ -9,8 +9,6 @@ import { NETWORK, PACKAGE_ID, CLOCK } from "./config.js";
 
 export const client = new SuiClient({ url: getFullnodeUrl(NETWORK) });
 
-// ── Keypair ───────────────────────────────────────────────────────────────────
-
 export function loadOwnerKeypair(): Ed25519Keypair {
   const keystorePath = join(homedir(), ".sui", "sui_config", "sui.keystore");
   const keys: string[] = JSON.parse(readFileSync(keystorePath, "utf8"));
@@ -23,8 +21,6 @@ export function addr(kp: Ed25519Keypair): string {
   return kp.getPublicKey().toSuiAddress();
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 function assertOk(
   result: { effects?: { status?: { status: string; error?: string } } | null },
   label: string,
@@ -33,9 +29,6 @@ function assertOk(
   if (s?.status !== "success") throw new Error(`${label}: ${s?.error ?? "failed"}`);
 }
 
-// ── On-chain actions ──────────────────────────────────────────────────────────
-
-/** Fund N agents in a single PTB — one gas coin, one transaction. */
 export async function fundAllAgents(
   from: Ed25519Keypair,
   agents: string[],
@@ -43,7 +36,6 @@ export async function fundAllAgents(
   paymentMist: bigint,
 ): Promise<void> {
   const tx = new Transaction();
-  // Split all coins in one shot, then distribute in pairs.
   const amounts = agents.flatMap(() => [gasMist, paymentMist]);
   const coins = tx.splitCoins(tx.gas, amounts);
   agents.forEach((to, i) => {
@@ -55,9 +47,6 @@ export async function fundAllAgents(
   assertOk(r, "fund_all");
 }
 
-/** Issue N caps in a single PTB — one gas coin, N caps created atomically.
- *  Returns cap IDs ordered to match the input agents array, using CapIssued
- *  events (which carry the agent address) to build the correct mapping. */
 export async function issueAllCaps(
   owner: Ed25519Keypair,
   agents: string[],
@@ -81,7 +70,6 @@ export async function issueAllCaps(
   });
   assertOk(r, "issue_all_caps");
 
-  // Build agent → capId map from CapIssued events.
   const agentToCap = new Map<string, string>();
   for (const ev of r.events ?? []) {
     const fields = ev.parsedJson as { cap_id: string; agent: string } | undefined;
@@ -92,7 +80,7 @@ export async function issueAllCaps(
 
   return agents.map((a, i) => {
     const capId = agentToCap.get(a);
-    if (!capId) throw new Error(`No CapIssued event found for agent ${i + 1} (${a.slice(0, 8)})`);
+    if (!capId) throw new Error(`No CapIssued event for agent ${i + 1}`);
     return capId;
   });
 }
@@ -102,15 +90,14 @@ export async function pay(
   capId: string,
   payeeAddress: string,
   amountMist: bigint,
-): Promise<void> {
+): Promise<string> {
   const coins = await client.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
-  // Largest coin for gas, smallest eligible coin for the Move argument.
-  const sorted = coins.data.sort((a, b) =>
+  const sorted = [...coins.data].sort((a, b) =>
     BigInt(a.balance) < BigInt(b.balance) ? -1 : 1,
   );
   const paymentCoin = sorted.find((c) => BigInt(c.balance) >= amountMist);
-  const gasCoin     = sorted.findLast((c) => c.coinObjectId !== paymentCoin?.coinObjectId);
-  if (!paymentCoin) throw new Error(`No coin ≥ ${amountMist} for ${addr(agent).slice(0, 8)}`);
+  const gasCoin     = [...sorted].reverse().find((c) => c.coinObjectId !== paymentCoin?.coinObjectId);
+  if (!paymentCoin) throw new Error(`Insufficient coins for ${addr(agent).slice(0, 8)}`);
   if (!gasCoin)     throw new Error(`No separate gas coin for ${addr(agent).slice(0, 8)}`);
 
   const tx = new Transaction();
@@ -134,6 +121,7 @@ export async function pay(
     signer: agent, transaction: tx, options: { showEffects: true },
   });
   assertOk(r, "pay");
+  return r.digest;
 }
 
 export async function revoke(owner: Ed25519Keypair, capId: string): Promise<void> {
@@ -146,4 +134,29 @@ export async function revoke(owner: Ed25519Keypair, capId: string): Promise<void
     signer: owner, transaction: tx, options: { showEffects: true },
   });
   assertOk(r, "revoke");
+}
+
+export async function withdrawAgent(
+  agent: Ed25519Keypair,
+  ownerAddress: string,
+): Promise<string | null> {
+  const coins = await client.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
+  if (coins.data.length === 0) return null;
+  const sorted = [...coins.data].sort((a, b) =>
+    BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
+  );
+  const gasCoin   = sorted[0];
+  const restCoins = sorted.slice(1);
+  const tx = new Transaction();
+  tx.setGasBudget(3_000_000n);
+  tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
+  if (restCoins.length > 0) {
+    tx.transferObjects(restCoins.map((c) => tx.object(c.coinObjectId)), ownerAddress);
+  }
+  tx.transferObjects([tx.gas], ownerAddress);
+  const r = await client.signAndExecuteTransaction({
+    signer: agent, transaction: tx, options: { showEffects: true },
+  });
+  assertOk(r, "withdraw");
+  return r.digest;
 }
