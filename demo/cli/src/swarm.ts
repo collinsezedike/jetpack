@@ -69,8 +69,8 @@ function rpad(s: string, w: number): string {
 }
 
 function fmt(mist: bigint): string {
-  const sui = Number(mist) / 1e9;
-  return sui >= 0.0001 ? `${sui.toFixed(4)} SUI` : `${Number(mist)}`;
+  if (mist === 0n) return "0 SUI";
+  return `${(Number(mist) / 1e9).toFixed(3)} SUI`;
 }
 
 // ── Display ───────────────────────────────────────────────────────────────────

@@ -1,7 +1,4 @@
-function formatVolume(mist: bigint): string {
-  const sui = Number(mist) / 1_000_000_000;
-  return sui >= 0.001 ? `${sui.toFixed(3)} SUI` : `${Number(mist / 1000n)}K MIST`;
-}
+import { formatMist } from "../utils";
 
 type Phase = "idle" | "funding" | "issuing" | "capped" | "running" | "done";
 
@@ -55,7 +52,7 @@ export default function ControlPanel({
 
       {stats.totalTx > 0 && (
         <div className="grid grid-cols-4 gap-3 text-center text-[11px]">
-          <Stat label="VOLUME"   value={formatVolume(stats.volumeMist)}       color="text-blue-400"   />
+          <Stat label="VOLUME"   value={formatMist(stats.volumeMist)}       color="text-blue-400"   />
           <Stat label="TX TOTAL" value={stats.totalTx}                        color="text-violet-400" />
           <Stat label="TX/S"     value={stats.txPerSec ? `${stats.txPerSec}` : "..."} color="text-yellow-400" />
           <Stat label="ACTIVE"   value={stats.active}                         color="text-green-400"  />

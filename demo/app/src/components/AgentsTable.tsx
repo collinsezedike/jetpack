@@ -113,11 +113,11 @@ export default function AgentsTable({ agents, onRevoke }: Props) {
                 </td>
 
                 <td className="px-3 py-2 text-right text-orange-400">
-                  {a.spent > 0n ? formatMist(a.spent) : <span className="text-zinc-700">0</span>}
+                  {formatMist(a.spent)}
                 </td>
 
                 <td className="px-3 py-2 text-right text-green-400">
-                  {a.received > 0n ? formatMist(a.received) : <span className="text-zinc-700">0</span>}
+                  {formatMist(a.received)}
                 </td>
 
                 <td className="px-3 py-2 text-right text-zinc-400">{a.txCount}</td>
