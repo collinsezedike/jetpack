@@ -1,0 +1,24 @@
+{
+  "name": "jetpack-sui",
+  "version": "0.1.0",
+  "description": "SDK for the Jetpack scoped spending capability protocol on Sui",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@mysten/sui": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@mysten/sui": "^1.45.2",
+    "typescript": "^5.0.0"
+  }
+}
