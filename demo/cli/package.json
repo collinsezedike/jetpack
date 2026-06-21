@@ -9,7 +9,8 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@mysten/sui": "^1.0.0"
+    "@mysten/sui": "^1.0.0",
+    "jetpack-sui": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

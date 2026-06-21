@@ -56,6 +56,9 @@ importers:
       '@mysten/sui':
         specifier: ^1.0.0
         version: 1.45.2(typescript@5.9.3)
+      jetpack-sui:
+        specifier: workspace:*
+        version: link:../../sdk
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

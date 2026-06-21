@@ -1,13 +1,14 @@
-import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
 import { readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { NETWORK, PACKAGE_ID, CLOCK } from "./config.js";
+import { JetpackClient } from "jetpack-sui";
+import { NETWORK } from "./config.js";
 
-export const client = new SuiClient({ url: getFullnodeUrl(NETWORK) });
+export const jetpack = new JetpackClient({ network: NETWORK });
+export const { suiClient } = jetpack;
 
 export function loadOwnerKeypair(): Ed25519Keypair {
   const keystorePath = join(homedir(), ".sui", "sui_config", "sui.keystore");
@@ -29,6 +30,8 @@ function assertOk(
   if (s?.status !== "success") throw new Error(`${label}: ${s?.error ?? "failed"}`);
 }
 
+// ── Demo utilities (batch ops, not protocol primitives) ───────────────────────
+
 export async function fundAllAgents(
   from: Ed25519Keypair,
   agents: string[],
@@ -38,10 +41,8 @@ export async function fundAllAgents(
   const tx = new Transaction();
   const amounts = agents.flatMap(() => [gasMist, paymentMist]);
   const coins = tx.splitCoins(tx.gas, amounts);
-  agents.forEach((to, i) => {
-    tx.transferObjects([coins[i * 2], coins[i * 2 + 1]], to);
-  });
-  const r = await client.signAndExecuteTransaction({
+  agents.forEach((to, i) => tx.transferObjects([coins[i * 2], coins[i * 2 + 1]], to));
+  const r = await suiClient.signAndExecuteTransaction({
     signer: from, transaction: tx, options: { showEffects: true },
   });
   assertOk(r, "fund_all");
@@ -55,7 +56,7 @@ export async function issueAllCaps(
   const tx = new Transaction();
   agents.forEach((agentAddr) => {
     tx.moveCall({
-      target: `${PACKAGE_ID}::jetpack::issue_cap`,
+      target: `${jetpack.packageId}::jetpack::issue_cap`,
       arguments: [
         tx.pure.address(agentAddr),
         tx.pure.u64(spendLimit),
@@ -64,26 +65,52 @@ export async function issueAllCaps(
       ],
     });
   });
-  const r = await client.signAndExecuteTransaction({
-    signer: owner, transaction: tx,
-    options: { showEvents: true, showEffects: true },
+  const r = await suiClient.signAndExecuteTransaction({
+    signer: owner, transaction: tx, options: { showEvents: true, showEffects: true },
   });
   assertOk(r, "issue_all_caps");
 
   const agentToCap = new Map<string, string>();
   for (const ev of r.events ?? []) {
-    const fields = ev.parsedJson as { cap_id: string; agent: string } | undefined;
-    if (fields?.cap_id && fields?.agent) {
-      agentToCap.set(fields.agent, `0x${fields.cap_id.replace(/^0x/i, "")}`);
+    const f = ev.parsedJson as { cap_id?: string; agent?: string } | undefined;
+    if (f?.cap_id && f?.agent) {
+      agentToCap.set(f.agent, `0x${f.cap_id.replace(/^0x/i, "")}`);
     }
   }
-
   return agents.map((a, i) => {
-    const capId = agentToCap.get(a);
-    if (!capId) throw new Error(`No CapIssued event for agent ${i + 1}`);
-    return capId;
+    const id = agentToCap.get(a);
+    if (!id) throw new Error(`No cap event for agent ${i + 1}`);
+    return id;
   });
 }
+
+export async function withdrawAgent(
+  agent: Ed25519Keypair,
+  ownerAddress: string,
+): Promise<string | null> {
+  const coins = await suiClient.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
+  if (coins.data.length === 0) return null;
+
+  const sorted  = [...coins.data].sort((a, b) => (BigInt(b.balance) > BigInt(a.balance) ? 1 : -1));
+  const gasCoin = sorted[0];
+  const rest    = sorted.slice(1);
+
+  const tx = new Transaction();
+  tx.setGasBudget(3_000_000n);
+  tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
+  if (rest.length > 0) {
+    tx.transferObjects(rest.map(c => tx.object(c.coinObjectId)), ownerAddress);
+  }
+  tx.transferObjects([tx.gas], ownerAddress);
+
+  const r = await suiClient.signAndExecuteTransaction({
+    signer: agent, transaction: tx, options: { showEffects: true },
+  });
+  assertOk(r, "withdraw");
+  return r.digest;
+}
+
+// ── Protocol operations (delegated to SDK) ────────────────────────────────────
 
 export async function pay(
   agent: Ed25519Keypair,
@@ -91,72 +118,10 @@ export async function pay(
   payeeAddress: string,
   amountMist: bigint,
 ): Promise<string> {
-  const coins = await client.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
-  const sorted = [...coins.data].sort((a, b) =>
-    BigInt(a.balance) < BigInt(b.balance) ? -1 : 1,
-  );
-  const paymentCoin = sorted.find((c) => BigInt(c.balance) >= amountMist);
-  const gasCoin     = [...sorted].reverse().find((c) => c.coinObjectId !== paymentCoin?.coinObjectId);
-  if (!paymentCoin) throw new Error(`Insufficient coins for ${addr(agent).slice(0, 8)}`);
-  if (!gasCoin)     throw new Error(`No separate gas coin for ${addr(agent).slice(0, 8)}`);
-
-  const tx = new Transaction();
-  tx.setGasBudget(5_000_000n);
-  tx.setGasPayment([{
-    objectId: gasCoin.coinObjectId,
-    version:  gasCoin.version,
-    digest:   gasCoin.digest,
-  }]);
-  tx.moveCall({
-    target: `${PACKAGE_ID}::jetpack::pay`,
-    arguments: [
-      tx.object(capId),
-      tx.object(paymentCoin.coinObjectId),
-      tx.pure.address(payeeAddress),
-      tx.pure.u64(amountMist),
-      tx.object(CLOCK),
-    ],
-  });
-  const r = await client.signAndExecuteTransaction({
-    signer: agent, transaction: tx, options: { showEffects: true },
-  });
-  assertOk(r, "pay");
-  return r.digest;
+  const { digest } = await jetpack.pay(agent, { capId, payee: payeeAddress, amount: amountMist });
+  return digest;
 }
 
 export async function revoke(owner: Ed25519Keypair, capId: string): Promise<void> {
-  const tx = new Transaction();
-  tx.moveCall({
-    target: `${PACKAGE_ID}::jetpack::revoke`,
-    arguments: [tx.object(capId)],
-  });
-  const r = await client.signAndExecuteTransaction({
-    signer: owner, transaction: tx, options: { showEffects: true },
-  });
-  assertOk(r, "revoke");
-}
-
-export async function withdrawAgent(
-  agent: Ed25519Keypair,
-  ownerAddress: string,
-): Promise<string | null> {
-  const coins = await client.getCoins({ owner: addr(agent), coinType: "0x2::sui::SUI" });
-  if (coins.data.length === 0) return null;
-  const sorted = [...coins.data].sort((a, b) =>
-    BigInt(b.balance) > BigInt(a.balance) ? 1 : -1,
-  );
-  const gasCoin   = sorted[0];
-  const restCoins = sorted.slice(1);
-  const tx = new Transaction();
-  tx.setGasBudget(3_000_000n);
-  tx.setGasPayment([{ objectId: gasCoin.coinObjectId, version: gasCoin.version, digest: gasCoin.digest }]);
-  if (restCoins.length > 0) {
-    tx.transferObjects(restCoins.map((c) => tx.object(c.coinObjectId)), ownerAddress);
-  }
-  tx.transferObjects([tx.gas], ownerAddress);
-  const r = await client.signAndExecuteTransaction({
-    signer: agent, transaction: tx, options: { showEffects: true },
-  });
-  assertOk(r, "withdraw");
-  return r.digest;
+  await jetpack.revoke(owner, capId);
 }
